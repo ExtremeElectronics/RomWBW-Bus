@@ -59,8 +59,6 @@
 
 #include "malloc.h"
 
-//#define FFS True
-
 //ide file handles
 FIL fili;
 FIL fild;
@@ -85,6 +83,14 @@ volatile uint8_t playing_disk=1;
 uint16_t disksound_timer=0;
 uint8_t disksounds=1;
 #define PWMrate 90
+
+//CLK
+#define ClkPin 19
+//click pin frequency in Khz
+#define CLKFREQ 7372
+uint16_t ClkFreq=CLKFREQ;
+uint CLKslice;
+
 //must be pins on the same slice
 #ifndef DevBoard
 #define soundIO1 15
@@ -178,9 +184,9 @@ struct ide_controller *ide0;
 */
 
 int Uart_BaudRate = 115200;
-uint8_t Uart_DataBits = 8;
-uint8_t Uart_StopBits = 1;
-uint8_t Uart_Parity = UART_PARITY_NONE;
+int Uart_DataBits = 8;
+int Uart_StopBits = 1;
+int Uart_Parity = UART_PARITY_NONE;
 
 
 // We are using pins 0 and 1, but see the GPIO function select table in the
@@ -210,7 +216,7 @@ static int charoutUSB=0;
 
 //PIO
 int PIOAport=0;
-
+static int InvertSwitches=0;
 
 #ifndef DevBoard
 #ifdef RCROMWBW
@@ -324,7 +330,8 @@ static uint8_t have_16x50;
 static uint8_t fast = 0;
 static uint8_t int_recalc = 0;
 
-static uint16_t tstate_steps = 500;	/* RC2014 core v peritherals - higher z80 - lower pepherals  */
+
+static uint16_t tstate_steps = 1000;	/* RC2014 core v peritherals - higher z80 - lower pepherals  */
 
 /* IRQ source that is live in IM2 */
 static uint8_t live_irq;
@@ -1369,6 +1376,9 @@ static uint8_t PIOA_read(void){
        gpio_disable_pulls(PIOAp[a]);
        v=v << 1;
     }
+//    printf("R %i %i\n",r,InvertSwitches);
+    if (InvertSwitches==1) r=~r;
+//    printf("R %i\n",r,InvertSwitches);
     return r;
 
 }
@@ -2328,7 +2338,16 @@ void PlayAllophones(uint8_t *alist,int listlength){
 }
 
 
+void SetPWMCLK(uint32_t Cfreq){
+    float x=(float)250000/4/(float)Cfreq;
+    pwm_set_clkdiv(CLKslice,x);
+    pwm_set_wrap(CLKslice,3);
+    pwm_set_chan_level(CLKslice,PWM_CHAN_B,2);
+    
+}
+
 void SetPWM(void){
+    //Sound Pins
     gpio_init(soundIO1);
     gpio_set_dir(soundIO1,GPIO_OUT);
     gpio_set_function(soundIO1, GPIO_FUNC_PWM);
@@ -2345,7 +2364,16 @@ void SetPWM(void){
 
     pwm_set_wrap (PWMslice, 256);
     pwm_set_enabled(PWMslice,true);
+    
+    //set Clk PWM
+    gpio_init(ClkPin);
+    gpio_set_dir(ClkPin,GPIO_OUT);
+    gpio_set_function(ClkPin, GPIO_FUNC_PWM);
 
+    CLKslice=pwm_gpio_to_slice_num(ClkPin);
+    SetPWMCLK(ClkFreq);
+    pwm_set_enabled(CLKslice,true);
+    
 }
 
 void Beep(uint8_t note){
@@ -2615,7 +2643,57 @@ void Core1Main(void){
 
 
 
+void DoBanner(void){
+      char RomTitle[200];
 
+    //compiled time
+	printf("\n\rCompiled %s %s\n",__DATE__,__TIME__);
+
+    //chip detect
+     char chip[8]="??????";
+#ifdef PICO_RP2350
+       sprintf(chip,"RP2350");
+#endif
+#ifdef PICO_RP2040
+     sprintf(chip,"RP2040");
+#endif
+
+
+
+  
+    //banner
+    sprintf(RomTitle, "\n\r\n\r\n\r\n\r\n\r\n\r");PrintToSelected(RomTitle,0);                                        
+    sprintf(RomTitle, "\n\r        _       _   _____   _       _    ");PrintToSelected(RomTitle,0);                       
+    sprintf(RomTitle, "\n\r       | |     | | (___  \\ | |     | |   ");PrintToSelected(RomTitle,0);                         
+    sprintf(RomTitle, "\n\r       | |  _  | |  ___| | | |  _  | |   ");PrintToSelected(RomTitle,0);                       
+    sprintf(RomTitle, "\n\r       | | | | | | (___ (  | | | | | |   ");PrintToSelected(RomTitle,0);                        
+    sprintf(RomTitle, "\n\r       | | | | | |  ___| | | | | | | |   ");PrintToSelected(RomTitle,0);                       
+    sprintf(RomTitle, "\n\r       |_| |_| |_| (_____/ |_| |_| |_|   ");PrintToSelected(RomTitle,0);                            
+    //sprintf(RomTitle, "\n\r    ");PrintToSelected(RomTitle,0);
+    sprintf(RomTitle, "\n\r            _____    _   _    ___              ");PrintToSelected(RomTitle,0);                       
+    sprintf(RomTitle, "\n\r           |  __ \\  | | | |  / __|             ");PrintToSelected(RomTitle,0);                         
+    sprintf(RomTitle, "\n\r           | |__| | | | | |  | |              ");PrintToSelected(RomTitle,0);                       
+    sprintf(RomTitle, "\n\r           |  __ (  | | | |  \\  \\             ");PrintToSelected(RomTitle,0);                        
+    sprintf(RomTitle, "\n\r           | |__| | | |_| |  _| |                ");PrintToSelected(RomTitle,0);                       
+    sprintf(RomTitle, "\n\r           |_____/  \\_____/ |___/               ");PrintToSelected(RomTitle,0);                            
+    //sprintf(RomTitle, "\n\r    ");PrintToSelected(RomTitle,0);
+    sprintf(RomTitle, "\n\r   ____________________________________________ ");PrintToSelected(RomTitle,0);
+    sprintf(RomTitle, "\n\r  / __    __      __    __                     |");PrintToSelected(RomTitle,0);
+    sprintf(RomTitle, "\n\r  | |__|  |__|    |__|  |__|                   |");PrintToSelected(RomTitle,0);
+    sprintf(RomTitle, "\n\r  |                           _______________  |");PrintToSelected(RomTitle,0);
+    sprintf(RomTitle, "\n\r  | RP2350 RomWBW Bus  by    | ROMWBW Bus on | |");PrintToSelected(RomTitle,0);
+    sprintf(RomTitle, "\n\r  |     Derek Woodroffe      |     %s    | |",chip);PrintToSelected(RomTitle,0);
+    sprintf(RomTitle, "\n\r  |     of Extreme Kits      |_______________| |");PrintToSelected(RomTitle,0);
+    sprintf(RomTitle, "\n\r  |     Kits at extkits.uk/romwbwbus           |");PrintToSelected(RomTitle,0);
+    sprintf(RomTitle, "\n\r  |  _______      2025                         |");PrintToSelected(RomTitle,0);
+    sprintf(RomTitle, "\n\r  | |_______|        ExtKits       ROMWBW      |");PrintToSelected(RomTitle,0);
+    sprintf(RomTitle, "\n\r _|____________________________________________|_");PrintToSelected(RomTitle,0);
+    sprintf(RomTitle, "\n\r|________________________________________________| \n\r\n\r");PrintToSelected(RomTitle,0);
+    sprintf(RomTitle, "\n\r    ");PrintToSelected(RomTitle,0);                                                                              
+
+
+
+}
 
 
 
@@ -2687,8 +2765,13 @@ void main(void)
         
         // No SD Disk
         if (FR_OK != fr){
+            
+            
             // panic("f_mount error: %s (%d)\n", FRESULT_str(fr), fr);
             sleep_ms(3000); // wait for USB
+
+            DoBanner();
+
             gpio_put(DISKLED, 1); // SET LED PIN ON as a subtle hint.
             printf("SD INIT FAIL  \n\r");
             uart_puts(UART_ID, "SD INIT FAIL\n\r");
@@ -2696,6 +2779,8 @@ void main(void)
 	    SSD1306_background_image(NoDisk);
 	    SSD1306_sendBuffer();
 	    DisplayDirty=0;
+	    
+	    
 
             sleep_ms(1000);
             while(1); //halt
@@ -2759,24 +2844,26 @@ void main(void)
 	  watch = iniparser_getint(ini, "DEBUG:watch",0 );
 	  
 	  //Uart Settings
-	  Uart_BaudRate = iniparser_getint(ini, "[UART]:BaudRate",Uart_BaudRate );
-	  Uart_DataBits = iniparser_getint(ini, "[UART]:DataBits",Uart_DataBits );
-	  Uart_StopBits = iniparser_getint(ini, "[UART]:StopBits",Uart_StopBits );
-	  Uart_Parity = iniparser_getint(ini, "[UART]:UartParity",Uart_Parity );
+	  Uart_BaudRate = iniparser_getint(ini, "UART:BaudRate",Uart_BaudRate );
+	  Uart_DataBits = iniparser_getint(ini, "UART:DataBits",Uart_DataBits );
+	  Uart_StopBits = iniparser_getint(ini, "UART:StopBits",Uart_StopBits );
+	  Uart_Parity = iniparser_getint(ini, "UART:UartParity",Uart_Parity );
 
 	  // PORT
-	  PIOAport = iniparser_getint(ini, "[PORT]:pioa",0 );
-	  SPO256Port = iniparser_getint(ini, "[PORT]:spo256",SPO256Port );
-	  SPO256FreqPort = iniparser_getint(ini, "[PORT]:spo256freq",SPO256FreqPort );
-	  BeepPort = iniparser_getint(ini, "[PORT]:beep",BeepPort );
-	  NeoPixelPort = iniparser_getint(ini,"[PORT]:Neo", NeoPixelPort);
-	  DisplayRegPort = iniparser_getint(ini,"[PORT]:DisplayReg",DisplayRegPort);
-	  DisplayDataPort= iniparser_getint(ini,"[PORT]:DisplayData",DisplayDataPort);
+	  PIOAport = iniparser_getint(ini, "PORT:pioa",0 );
+	  SPO256Port = iniparser_getint(ini, "PORT:spo256",SPO256Port );
+	  SPO256FreqPort = iniparser_getint(ini, "PORT:spo256freq",SPO256FreqPort );
+	  BeepPort = iniparser_getint(ini, "PORT:beep",BeepPort );
+	  NeoPixelPort = iniparser_getint(ini,"PORT:Neo", NeoPixelPort);
+	  DisplayRegPort = iniparser_getint(ini,"PORT:DisplayReg",DisplayRegPort);
+	  DisplayDataPort= iniparser_getint(ini,"PORT:DisplayData",DisplayDataPort);
 	  
-
+	  InvertSwitches = iniparser_getint(ini, "PORT:InvSwitches",InvertSwitches);
+          
 	  //Bus
-	  wait = iniparser_getint(ini, "[BUS]:wait",wait );
-	  IoSleep = iniparser_getint(ini,"[BUS]:IoSleep",IoSleep);
+	  wait = iniparser_getint(ini, "BUS:wait",wait );
+	  IoSleep = iniparser_getint(ini,"BUS:IoSleep",IoSleep);
+	  ClkFreq = iniparser_getint(ini,"BUS:ClkFreq",ClkFreq);
 
 	  //Sound
 	  disksounds=iniparser_getint(ini, "[SOUND]:disksounds",disksounds );
@@ -2811,6 +2898,8 @@ void main(void)
             printf("SD INIT OK \n\r",1);
         }
         
+        //set clock Pin
+        SetPWMCLK(ClkFreq);
         
         
 
@@ -2818,7 +2907,11 @@ void main(void)
         if (UseUsb==1){
             PrintToSelected("\rWaiting for USB to connect\n\r",1);
             //if usb wait for usb to connect.
-            while (!tud_cdc_connected()) { sleep_ms(100);  }
+            for (int a=0;a<30;a++){
+               if (tud_cdc_connected())break;
+               sleep_ms(100);
+            }
+            //while (!tud_cdc_connected()) { sleep_ms(100);  }
         }
 
 
@@ -2833,23 +2926,13 @@ void main(void)
             }
         }
 
-//compiled time
-	printf("\n\rCompiled %s %s\n",__DATE__,__TIME__);
-
-
 // Decided on serial port so from here on Print only to that post
+
+
 
 //init PIO
         if(PIOAport<256) PIOA_init();
 
-//chip detect
-     char chip[8]="??????";
-#ifdef PICO_RP2350
-     sprintf(chip,"RP2350");
-#endif
-#ifdef PICO_RP2040
-     sprintf(chip,"RP2040");
-#endif
 
 
 
@@ -2859,34 +2942,7 @@ printf("Init External RC2014 bus\n");
 z80_bus_init();
 
 
-//banner
-sprintf(RomTitle, "\n\r\n\r");PrintToSelected(RomTitle,0);                                        
-sprintf(RomTitle, "\n\r     _____    _     ____     ____   ");PrintToSelected(RomTitle,0);                       
-sprintf(RomTitle, "\n\r    |  __ \\  | |   / __ \\   / __ \\  ");PrintToSelected(RomTitle,0);                         
-sprintf(RomTitle, "\n\r    | |__| | | |  | |  |_| | |  | | ");PrintToSelected(RomTitle,0);                       
-sprintf(RomTitle, "\n\r    |  ___/  | |  | |   _  | |  | | ");PrintToSelected(RomTitle,0);                        
-sprintf(RomTitle, "\n\r    | |      | |  | |__| | | |__| | ");PrintToSelected(RomTitle,0);                       
-sprintf(RomTitle, "\n\r    |_|      |_|   \\____/   \\____/  ");PrintToSelected(RomTitle,0);    
-sprintf(RomTitle, "\n\r     _       _   _____   _       _    ");PrintToSelected(RomTitle,0);                       
-sprintf(RomTitle, "\n\r    | |     | | (___  \\ | |     | |   ");PrintToSelected(RomTitle,0);                         
-sprintf(RomTitle, "\n\r    | |  _  | |  ___| | | |  _  | |   ");PrintToSelected(RomTitle,0);                       
-sprintf(RomTitle, "\n\r    | | | | | | (___ (  | | | | | |   ");PrintToSelected(RomTitle,0);                        
-sprintf(RomTitle, "\n\r    | | | | | |  ___| | | | | | | |   ");PrintToSelected(RomTitle,0);                       
-sprintf(RomTitle, "\n\r    |_| |_| |_| (_____/ |_| |_| |_|   ");PrintToSelected(RomTitle,0);                            
-sprintf(RomTitle, "\n\r    ");PrintToSelected(RomTitle,0);
-sprintf(RomTitle, "\n\r   ___________________________________ ");PrintToSelected(RomTitle,0);
-sprintf(RomTitle, "\n\r  |  __    __    __      __           |");PrintToSelected(RomTitle,0);
-sprintf(RomTitle, "\n\r  | |__|  |__|  |__|    |__|          |");PrintToSelected(RomTitle,0);
-sprintf(RomTitle, "\n\r  |                                   |");PrintToSelected(RomTitle,0);
-sprintf(RomTitle, "\n\r  |        PICO ROMWBW on %s      |",chip);PrintToSelected(RomTitle,0);
-sprintf(RomTitle, "\n\r  |         Derek Woodroffe           |");PrintToSelected(RomTitle,0);
-sprintf(RomTitle, "\n\r  |           Extreme Kits            |");PrintToSelected(RomTitle,0);
-sprintf(RomTitle, "\n\r  |     Kits at extkits.uk/ROMWBW     |");PrintToSelected(RomTitle,0);
-sprintf(RomTitle, "\n\r  |  _______      2025                |");PrintToSelected(RomTitle,0);
-sprintf(RomTitle, "\n\r  | |_______|        eXtkits    WBW   |");PrintToSelected(RomTitle,0);
-sprintf(RomTitle, "\n\r _|___________________________________|_");PrintToSelected(RomTitle,0);
-sprintf(RomTitle, "\n\r|_______________________________________| \n\r\n\r");PrintToSelected(RomTitle,0);
-sprintf(RomTitle, "\n\r    ");PrintToSelected(RomTitle,0);                                                                              
+    DoBanner();
 
 // memory free
 	printf("Total Heap %i\n",getTotalHeap());
@@ -3057,6 +3113,8 @@ sprintf(RomTitle, "\n\r    ");PrintToSelected(RomTitle,0);
 	cpu_z80.trace = z80_trace;
 
 
+	printf("Invert switches %i\n",InvertSwitches);	
+
 	PrintToSelected("\r\n #######  Pico RomWBW STARTING  ######\n\r",0);
 
 //Start Core1
@@ -3075,7 +3133,32 @@ sprintf(RomTitle, "\n\r    ");PrintToSelected(RomTitle,0);
 	while (!emulator_done) {
 		int i;
 		/* 36400 T states for base RC2014 - varies for others */
-//                if(HasSwitches){       
+
+		for (i = 0; i < 40; i++) {  //origional
+		    int j;
+		    for (j = 0; j < 200; j++) { Z80ExecuteTStates(&cpu_z80, (tstate_steps + 5)/ 10);	}
+		    if (acia) acia_timer(acia);
+		    if (sio2) sio2_timer();
+		    if (have_16x50) uart_event(&uart[0]);
+		}
+		
+		//fake USB char in interrupts
+		//if (UseUsb==1) 
+		intUSBcharwaiting();
+		
+		if (int_recalc) {
+			/* If there is no pending Z80 vector IRQ but we think
+			   there now might be one we use the same logic as for
+			   reti */
+			if (!live_irq )
+				poll_irq_event();
+			/* Clear this after because reti_event may set the
+			   flags to indicate there is more happening. We will
+			   pick up the next state changes on the reti if so */
+			if (!(cpu_z80.IFF1|cpu_z80.IFF2))
+   			   int_recalc = 0;
+		}
+
 	            if(gpio_get(DUMPBUT)==0){
                         DumpMemory(0,0x10000,fr);
                         while(gpio_get(DUMPBUT)==0);
@@ -3102,32 +3185,7 @@ sprintf(RomTitle, "\n\r    ");PrintToSelected(RomTitle,0);
                        gpio_put(AUXLED,0);
                     
                     }
-  //              }
 
-		for (i = 0; i < 40; i++) {  //origional
-		    int j;
-		    for (j = 0; j < 50; j++) { Z80ExecuteTStates(&cpu_z80, (tstate_steps + 5)/ 10);	}
-		    if (acia) acia_timer(acia);
-		    if (sio2) sio2_timer();
-		    if (have_16x50) uart_event(&uart[0]);
-		}
-		
-		//fake USB char in interrupts
-		//if (UseUsb==1) 
-		intUSBcharwaiting();
-		
-		if (int_recalc) {
-			/* If there is no pending Z80 vector IRQ but we think
-			   there now might be one we use the same logic as for
-			   reti */
-			if (!live_irq )
-				poll_irq_event();
-			/* Clear this after because reti_event may set the
-			   flags to indicate there is more happening. We will
-			   pick up the next state changes on the reti if so */
-			if (!(cpu_z80.IFF1|cpu_z80.IFF2))
-   			   int_recalc = 0;
-		}
 	}
 }
 
