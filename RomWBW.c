@@ -12,7 +12,10 @@
 //define to use ROMWBW PCB kit
 //undefine to use RC2040 PCB kit
 #define RCROMWBW 1
-#define DevBoard 1
+
+//define to add display
+//undefine to remove display also moves usb/uart switch to GPIO12
+#define WithDisplay 1
 
 #ifdef PICO_RP2350
 //define to try FFS from AUX Button (may be broken'ish)
@@ -59,6 +62,11 @@
 
 #include "malloc.h"
 
+#include "CTS256_AL2.c"
+//#include "rules_array.c"
+
+//#define FFS True
+
 //ide file handles
 FIL fili;
 FIL fild;
@@ -81,16 +89,7 @@ FIL fild1;
 uint16_t disksound_pointer=0;
 volatile uint8_t playing_disk=1; 
 uint16_t disksound_timer=0;
-uint8_t disksounds=1;
 #define PWMrate 90
-
-//CLK
-#define ClkPin 19
-//click pin frequency in Khz
-#define CLKFREQ 7372
-uint16_t ClkFreq=CLKFREQ;
-uint CLKslice;
-
 //must be pins on the same slice
 #ifndef DevBoard
 #define soundIO1 15
@@ -103,15 +102,22 @@ uint CLKslice;
 #endif
 
 uint PWMslice;
-int SPO256Port=0x28;
-int SPO256FreqPort=0x2a;
+uint8_t SPO256Port=0x28;
+uint8_t SPO256FreqPort=0x2a;
+uint8_t CTS256Port=0x2b;
 volatile static uint8_t SPO256DataOut;
 volatile static uint8_t SPO256DataReady=0;
 volatile static uint8_t SPO256FreqPortData=90;
+volatile static uint8_t CTS256DataOut;
+volatile static uint8_t CTS256DataReady=0;
+char Sentance[1024]={' ',0};
+uint16_t SentPos=0;
+uint8_t speak=0;
+uint8_t speakPos=0;
 
 //Beep
 #include "midiNotes.h"
-int BeepPort=0x29;
+uint8_t BeepPort=0x29;
 volatile static uint8_t BeepDataOut;
 volatile static uint8_t BeepDataReady=0;
 
@@ -128,7 +134,7 @@ uint8_t GetNeoData(uint8_t addr);
 
 #define RGBW 0
 
-int  NeoPixelPort=0x40;
+uint8_t NeoPixelPort=0x40;
 uint8_t NeoPortAddr;
 uint8_t NeoPortData;
 uint8_t NeoPortDataReady=0;
@@ -171,23 +177,15 @@ uint8_t pmr[5]={0,0,0,0,0}; // 0x78-0x7c
 int UseUsb=3; 
 
 //IDE
-int ide =1; //set to 1 to init IDE
+static int ide =1; //set to 1 to init IDE
 struct ide_controller *ide0;
 
 /* Real UART setup*/
-/*
 #define UART_ID uart0
 #define BAUD_RATE 115200
 #define DATA_BITS 8
 #define STOP_BITS 1
 #define PARITY    UART_PARITY_NONE
-*/
-
-int Uart_BaudRate = 115200;
-int Uart_DataBits = 8;
-int Uart_StopBits = 1;
-int Uart_Parity = UART_PARITY_NONE;
-
 
 // We are using pins 0 and 1, but see the GPIO function select table in the
 // datasheet for information on which other pins can be used.
@@ -215,10 +213,8 @@ static int charinUSB=0;
 static int charoutUSB=0;
 
 //PIO
-int PIOAport=0;
-static int InvertSwitches=0;
+int PIOA=0;
 
-#ifndef DevBoard
 #ifdef RCROMWBW
 uint8_t PIOAp[]={26,22,21,20,19,18,17,16};
 #endif
@@ -226,41 +222,26 @@ uint8_t PIOAp[]={26,22,21,20,19,18,17,16};
 #ifndef RCROMWBW
 uint8_t PIOAp[]={16,17,18,19,20,21,26,27};
 #endif
-#endif
-
-#ifdef DevBoard
-uint8_t PIOAp[]={11,12,13,14,15,16,17,18};
-#endif
 
 
 //PICO GPIO
 // use regular LED on pico if NOT WBW PCB (gpio 25 most likly)
-#ifdef RCROMWBW
+//#ifdef RCROMWBW
 const uint DISKLED = 10; //Rom WBW PCB LED
-#endif
-#ifndef RCROMWBW
-const uint DISKLED = PICO_DEFAULT_LED_PIN;
-#endif
+//#endif
+//#ifndef RCROMWBW
+//const uint DISKLED = PICO_DEFAULT_LED_PIN;
+//#endif
 
-//Ext RC2014 IO
-
-//RC2014 bus io starting at base pin...
-#define Z80_BUS_PIO_BASE 24
-//io masks
-uint64_t addressdatamask;
-uint64_t addressmask;
-uint64_t datamask;
-uint64_t controlmask;
-uint64_t allmask;
-
-//delay after putting address/control on to the bus, before read/write.
-uint16_t IoSleep =2;
-//IP pin for wait
-#define WAITIO 44
-uint8_t wait=0; //wait - disabled by default
 
 //serial selection
-//const uint SERSEL = 13;
+#ifndef WithDisplay
+const uint SERSEL = 13;
+#endif
+#ifdef WithDisplay
+const uint SERSEL = 11;
+#endif
+
 
 //buttons
 const uint DUMPBUT =9;
@@ -285,14 +266,14 @@ const uint AUXLED =6;
 #define UART_RX_PIN 1
 
 //Display
+#ifdef WithDisplay
 
 #define CGRAMMAX 0x40
 #define DDRAMMAX 0x80
 #define DisplayDebug 0 //set to 1 to add debug output
 int DisplayRegPort=0xda;
 int DisplayDataPort=0xdb;
-//uint8_t DisplayReg=0;
-//uint8_t DisplayData=0;
+
 uint8_t DisplayIR=0;
 uint8_t DisplayDR=0;
 uint8_t DisplayBusy=0;
@@ -312,16 +293,16 @@ uint8_t DisplayLines=0;
 uint8_t DisplayDirty=0;
 
 
+//I2c Settings
+#define I2CInst i2c0 //also in Romwbw.h ... yes I know!
+#define I2C_SDA_PIN 12
+#define I2C_SCL_PIN 13
+#define I2C_BAUDRATE 200000 //200Khz
+
 #include "display/display.h"
 #include "display/assets.h"
 
-
-//I2c Settings
-#define I2CInst i2c1
-#define I2C_SDA_PIN 46
-#define I2C_SCL_PIN 47
-#define I2C_BAUDRATE 400000 //400Khz
-
+#endif
 
 static uint8_t switchrom = 1;
 
@@ -330,8 +311,13 @@ static uint8_t have_16x50;
 static uint8_t fast = 0;
 static uint8_t int_recalc = 0;
 
+//Emulaton speed tweaks.
+static uint16_t tstate_steps = 500;
+//300 better for speed (core). 20 better for IO
+#define IOMAX 20
+#define IOMIN 400
+static uint16_t IoTimeShare = 200;
 
-static uint16_t tstate_steps = 1000;	/* RC2014 core v peritherals - higher z80 - lower pepherals  */
 
 /* IRQ source that is live in IM2 */
 static uint8_t live_irq;
@@ -407,6 +393,7 @@ static void z80_vardump(void)
 }
 
 //################################################### Memory access #############################################
+
 
 static uint8_t mem_read0(uint16_t addr)
 {
@@ -502,6 +489,8 @@ void mem_write(int unused, uint16_t addr, uint8_t val){
 
 //###################################################### Z80 code Trace / disassemble  ###################################
 
+
+
 uint8_t z80dis_byte(uint16_t addr){
 	uint8_t r = do_mem_read(addr, 1);
 	printf( "%02X ", r);
@@ -539,6 +528,7 @@ static void z80_trace(unsigned unused){
 
 
 
+
 // ############################################## SIO / ACIA serial support Functions #####################################
 
 // experimental usb char in circular buffer
@@ -546,7 +536,6 @@ static void z80_trace(unsigned unused){
 int intUSBcharwaiting(){
 // no interrupt or waiting check so use unblocking getchar, adds to buff if avai
     int c = getchar_timeout_us(0);
-//    if(c!=ENDSTDIN){
       if(c>=0){ // fix for SDK2 by djrose80
         charbufferUSB[charinUSB]=(char)c;
         charinUSB++;
@@ -604,7 +593,6 @@ char getUARTcharwaiting(void){
         if (charoutUART==INBUFFERSIZE){
             charoutUART=0;
         }
-
     }else{
         printf("UART Buffer underrun");
     }
@@ -625,10 +613,14 @@ unsigned int check_chario(uint8_t s_port){
                 }
             }else{
                 r|=1;
-            }     
+            }
+            // if we have a char, decrease interrupt latancey
+           IoTimeShare=IOMAX;        
+        }else{
+           // if no chars for a while, increase emulation speed
+           if (IoTimeShare<IOMIN) IoTimeShare++;
         }
-        if (uart_is_writable(UART_ID )>0)
-	    r |= 2;//transmit ready
+        if (uart_is_writable(UART_ID )>0)  r |= 2;//transmit ready
    }else{
         if(testUSBcharwaiting()){
          //bodge.. if currently in interrupt , lie that there is nothng waiting
@@ -640,7 +632,12 @@ unsigned int check_chario(uint8_t s_port){
             }else{
                  r|=1;
             }    
-       }
+            // if we have a char, decrease interrupt latancey
+            IoTimeShare=IOMAX;
+       }else{
+            // if no chars for a while, increase emulation speed
+            if (IoTimeShare<IOMIN) IoTimeShare++;
+       }    
        r |=2; //always ready to tx
    }
    return r;
@@ -1286,6 +1283,10 @@ static void sio2_write(uint16_t addr, uint8_t val)
 }
 
 
+
+// ################################################### IDE ###############################
+
+
 static uint8_t my_ide_read(uint16_t addr)
 {
 	uint8_t r =  ide_read8(ide0, addr);
@@ -1354,7 +1355,7 @@ static void PIOA_init(void){
     for (a=0;a<8;a++){
        gpio_init(PIOAp[a]);
        //for dev board
-       gpio_pull_down(PIOAp[a]);
+//       gpio_pull_down(PIOAp[a]);
     }
 
 }
@@ -1367,18 +1368,15 @@ static uint8_t PIOA_read(void){
     //set pullups make input
     for (a=0;a<8;a++){
        gpio_set_dir(PIOAp[a],GPIO_IN);
-       gpio_pull_up(PIOAp[a]);
+//       gpio_pull_up(PIOAp[a]);
     }
     sleep_us(500);
     //get bits disable pullups
     for (a=0;a<8;a++){   
        if(gpio_get(PIOAp[a]))r=r+v;
-       gpio_disable_pulls(PIOAp[a]);
+//       gpio_disable_pulls(PIOAp[a]);
        v=v << 1;
     }
-//    printf("R %i %i\n",r,InvertSwitches);
-    if (InvertSwitches==1) r=~r;
-//    printf("R %i\n",r,InvertSwitches);
     return r;
 
 }
@@ -1395,12 +1393,11 @@ static void PIOA_write(uint8_t val){
 
 }
 
+#ifdef WithDisplay
 
 //############################################################################################################
 //                                              DISPLAY
 //############################################################################################################
-
-
 
 void init_I2C(void){
     //init i2c
@@ -1419,8 +1416,8 @@ void init_I2C(void){
 }
 
 void init_display(void){
-    
-    if (DisplayDebug)printf("Display Init\n");
+
+    printf("Display Init\n");
     SSD1306_init(0x3C,SSD1306_W128xH32);
 
     SSD1306_background_image(xk_wbw);
@@ -1456,16 +1453,16 @@ void DisplayDDBuffer(){
     SSD1306_clear();
     if(DisplayOn==1){
         DisplayLine(0);
-        DisplayLine(1);   
-        DisplayLine(3);   
-        DisplayLine(4);  
-    } 
+        DisplayLine(1);
+        DisplayLine(3);
+        DisplayLine(4);
+    }
     SSD1306_sendBuffer();
     if (DisplayDirty==2)DisplayDirty=0;
 }
 
 void DisplayWrite(uint8_t val,uint8_t isdata){
-    
+
 //    printf("DW D%i ",isdata);
 
     if(isdata==0){
@@ -1478,7 +1475,7 @@ void DisplayWrite(uint8_t val,uint8_t isdata){
             DisplayAC=val & 0x7f;
             DisplayACGADD=0;
             if (DisplayDebug)printf(" DDRAM %i",DisplayAC);
-        }    
+        }
         else if (val &0x40){
             //Set CG Ram Address
             DisplayAC=val & 0x3f;
@@ -1512,13 +1509,13 @@ void DisplayWrite(uint8_t val,uint8_t isdata){
                 DisplayOn=0;
                 DisplayDirty=1;
 //                SSD1306_turnOff();
-            }   
+            }
             if (val &0x2)DisplayCursorOn=1;
             else DisplayCursorOn=0;
             if (val &0x1)DisplayBlinkOn=1;
-            else DisplayBlinkOn=0;  
+            else DisplayBlinkOn=0;
             if (DisplayDebug)printf(" DOF DO%i DC%i DB%i",DisplayOn,DisplayCursorOn,DisplayBlinkOn);
-        }    
+        }
         else if (val &0x04){
             //Entry Mode Set
             if (val &0x2)DisplayID=1;
@@ -1542,8 +1539,7 @@ void DisplayWrite(uint8_t val,uint8_t isdata){
             if (DisplayDebug)printf(" CLS");
             DisplayDirty=1;
         }
-
-    }else{    
+    }else{
         //DD write
         if (DisplayDebug)printf("WR");
 //       printf("DDW %i %i\n",val,DisplayAC);
@@ -1554,11 +1550,11 @@ void DisplayWrite(uint8_t val,uint8_t isdata){
         }else{
             if (DisplayDebug)printf(" %i->[%i] OOR! %c",val,DisplayAC,val);
         }
-           
+
         //DisplayDDBuffer();
         DisplayDirty=1;
-       
-    }  
+
+    }
     if (DisplayDebug)printf("\n");
 }
 
@@ -1586,102 +1582,14 @@ uint8_t  DisplayRead(uint8_t isdata){
     }
 
 
-  return 0;	
+  return 0;
 }
 
+#endif
 
 
-
-//######################################################################################################
-//#                                     External RC1014 IO Bus                                         #
-//######################################################################################################
-
-//control pins
-#define M1     0b1000 
-#define IORQ   0b1110
-#define WR     0b1011
-#define RD     0b1101
-/*
-#define M1     0b1000 
-#define IORQ   0b1110
-#define WR     0b1101
-#define RD     0b1011
-*/	
-#define NOSIGS 0b0111
-
-void z80_bus_init(void){
-    uint16_t loop;
-    for(loop = 0; loop < 20 ; loop++){
-        gpio_init(Z80_BUS_PIO_BASE+loop);
-        gpio_pull_down(Z80_BUS_PIO_BASE+loop);
-        gpio_set_dir(Z80_BUS_PIO_BASE+loop,1);
-    }
-
-    addressdatamask=(uint64_t)0xffff << Z80_BUS_PIO_BASE;
-
-    datamask=(uint64_t)0xff << Z80_BUS_PIO_BASE;
-    addressmask=(uint64_t)0xff << (Z80_BUS_PIO_BASE+8);
-    controlmask=(uint64_t)0xf << (Z80_BUS_PIO_BASE+16);
-    allmask=(uint64_t)0xfffff << Z80_BUS_PIO_BASE;
-/*
-    printf(" adm=0X%" PRIx64 "\n",addressdatamask);
-    printf(" dm=0X%" PRIx64 "\n",datamask);
-    printf(" am=0X%" PRIx64 "\n",addressmask);
-    printf(" cm=0X%" PRIx64 "\n",controlmask);
-*/
-    //all output
-    gpio_set_dir_masked64 (allmask, allmask);
-    //address and data zero
-    gpio_put_masked64(addressdatamask,0);
-    //all controls off
-    gpio_put_masked64(controlmask,NOSIGS);
-    
-    //wait
-    gpio_init(WAITIO);
-    gpio_set_dir(WAITIO,GPIO_IN);
-    gpio_pull_up(WAITIO);
-}
-
-void z80_bus_write(uint8_t Address, uint8_t Data){
-    //all output
-    gpio_set_dir_masked64(allmask, allmask);
-    //address & data
-    gpio_put_masked64(addressmask,(uint64_t)Address<<(Z80_BUS_PIO_BASE+8));
-    gpio_put_masked64(datamask,(uint64_t)Data<<Z80_BUS_PIO_BASE);
-    // controls
-    gpio_put_masked64(controlmask,(uint64_t)(M1 | (IORQ & WR))<< (Z80_BUS_PIO_BASE+16));
-    //  printf(" dm=0X%" PRIx64 " da=0X%" PRIx64 " \n",datamask,((uint64_t)Data<<Z80_BUS_PIO_BASE));
-    sleep_us(IoSleep);
-    //restore ctrl
-    gpio_put_masked64(controlmask,(uint64_t)NOSIGS<< (Z80_BUS_PIO_BASE+16));
-}
-
-uint8_t z80_bus_read(uint8_t Address){
-    //data read
-    gpio_set_dir_masked64(datamask, 0);
-    //address
-    gpio_put_masked64(addressmask,(uint64_t)Address<<(Z80_BUS_PIO_BASE+8));
-    //M1 IORQ READ
-    gpio_put_masked64(controlmask,(uint64_t)(M1 | (IORQ & RD)) << (Z80_BUS_PIO_BASE+16));
-    sleep_us(IoSleep);
-//    printf("%i",gpio_get(WAITIO));
-    if(wait)while(gpio_get(WAITIO)==0);
-    //read data
-    uint8_t r= (uint64_t)(gpio_get_all64() & datamask)>>Z80_BUS_PIO_BASE;
-//    printf(" dm=0X%" PRIx64 "\n",gpio_get_all64()&datamask);
-    // restore ctrl
-    gpio_put_masked64(controlmask,(uint64_t)NOSIGS<< (Z80_BUS_PIO_BASE+16));
-
-    return r;
-}
-
-
-//######################################################################################################
-//#                                     RC1014 IO                                                      #
-//######################################################################################################
-
-
-static uint8_t io_read_2014(uint16_t addr){
+static uint8_t io_read_2014(uint16_t addr)
+{
 	if (trace & TRACE_IO)
 		printf( "read %02x\n", addr);
 	if ((addr & 0xFF) == 0xBA) {
@@ -1702,20 +1610,20 @@ static uint8_t io_read_2014(uint16_t addr){
 		return my_ide_read(addr & 7);
 	if (addr >= 0xA0 && addr <= 0xA7 && have_16x50)
 		return uart_read(&uart[0], addr & 7);
-	else if (addr == PIOAport) return PIOA_read();	
+	else if (addr == PIOA) return PIOA_read();	
 	else if (addr == SPO256Port)  return SPO256DataReady;
 	else if (addr == SPO256FreqPort) return SPO256FreqPortData; 
+	else if (addr == CTS256Port)  return CTS256DataReady;
+
 	else if (addr == BeepPort) return BeepDataReady;
         else if (addr >= NeoPixelPort && addr <= NeoPixelPort+7) return GetNeoData(addr-NeoPixelPort);
+#ifdef WithDisplay
         else if (addr == DisplayRegPort)return DisplayRead(0);
         else if (addr == DisplayDataPort)return DisplayRead(1);
-
+#endif
 	if (trace & TRACE_UNK)
-		printf( "External read from port %04X\n", addr);
-//	printf("PR %04X\n");
-	//if ((addr & 0xff)<0x7f) 
-	return z80_bus_read((uint8_t)(addr & 0xff));
-	//return 0x78;	/* 78 is what my actual board floats at */
+		printf( "Unknown read from port %04X\n", addr);
+	return 0x78;	/* 78 is what my actual board floats at */
 }
 
 static void io_write_2014(uint16_t addr, uint8_t val, uint8_t known)
@@ -1745,8 +1653,9 @@ static void io_write_2014(uint16_t addr, uint8_t val, uint8_t known)
 		    pmr[ad]=val; //set page register
 		    if (trace & TRACE_BANK)  printf( "BkReg %02X[%02X]\n", ad,val);
 		}
-	else if (addr == PIOAport)PIOA_write(val);	
+	else if (addr == PIOA)PIOA_write(val);	
 	else if (addr == SPO256Port){SPO256DataOut=val;SPO256DataReady=1;}
+	else if (addr == CTS256Port){CTS256DataOut=val;CTS256DataReady=1;}
 	else if (addr == BeepPort){BeepDataOut=val;BeepDataReady=1;}
         else if (addr == SPO256FreqPort){SPO256FreqPortData=val;}
 	else if (addr >= NeoPixelPort && addr<= NeoPixelPort+7){
@@ -1754,8 +1663,10 @@ static void io_write_2014(uint16_t addr, uint8_t val, uint8_t known)
 		NeoPortData = val;
 		NeoPortDataReady = 1;
 		}
-        else if (addr == DisplayRegPort)DisplayWrite(val,0);
-        else if (addr == DisplayDataPort)DisplayWrite(val,1);		
+#ifdef WithDisplay		
+	else if (addr == DisplayRegPort)DisplayWrite(val,0);
+        else if (addr == DisplayDataPort)DisplayWrite(val,1);
+#endif
 	else if (addr == 0xFD) {
 		trace &= 0xFF00;
 		trace |= val;
@@ -1764,10 +1675,8 @@ static void io_write_2014(uint16_t addr, uint8_t val, uint8_t known)
 		trace &= 0xFF;
 		trace |= val << 8;
 		printf("trace set to %d\n", trace);
-	} else  z80_bus_write((uint8_t)(addr & 0xff),val);
-	
-//	} else if (!known && (trace & TRACE_UNK))
-//		printf( "Unknown write to port %04X of %02X\n", addr, val);
+	} else if (!known && (trace & TRACE_UNK))
+		printf( "Unknown write to port %04X of %02X\n", addr, val);
 }
 
 
@@ -1806,13 +1715,6 @@ void dumpPC(Z80Context* z80ctx){
     printf("PC %04x\n",z80ctx->PC);
 }
 
-
-void setUartParams(int br,uint8_t db,uint8_t sb,uint8_t p){
-   int __unused actual = uart_set_baudrate(UART_ID, br);
-   uart_set_format(UART_ID, db, sb, p);
-   
-}
-
 void init_pico_uart(void){
     // Set up our UART with a basic baud rate.
     uart_init(UART_ID, 2400);
@@ -1825,15 +1727,13 @@ void init_pico_uart(void){
     // Actually, we want a different speed
     // The call will return the actual baud rate selected, which will be as close as
     // possible to that requested
-//    int __unused actual = uart_set_baudrate(UART_ID, BAUD_RATE);
+    int __unused actual = uart_set_baudrate(UART_ID, BAUD_RATE);
 
     // Set UART flow control CTS/RTS, we don't want these, so turn them off
     uart_set_hw_flow(UART_ID, false, false);
 
     // Set our data format
-//    uart_set_format(UART_ID, DATA_BITS, STOP_BITS, PARITY);
-
-   setUartParams(Uart_BaudRate,Uart_DataBits,Uart_StopBits,Uart_Parity);	
+    uart_set_format(UART_ID, DATA_BITS, STOP_BITS, PARITY);
 
     // Turn off FIFO's - we want to do this character by character
     uart_set_fifo_enabled(UART_ID, false);
@@ -1856,8 +1756,8 @@ void setup_led(void){
   gpio_init(AUXLED);
   gpio_set_dir(AUXLED, GPIO_OUT);
   
-//  gpio_init(PICO_DEFAULT_LED_PIN);
-//  gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
+  gpio_init(PICO_DEFAULT_LED_PIN);
+  gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
   
 }
 
@@ -1865,10 +1765,10 @@ void setup_led(void){
 void flash_led(int t){
   //flash LED and PCB led
   gpio_put(DISKLED, 1);
-//  gpio_put(PICO_DEFAULT_LED_PIN,1);
+  gpio_put(PICO_DEFAULT_LED_PIN,1);
   sleep_ms(t);
   gpio_put(DISKLED, 0);
-//  gpio_put(PICO_DEFAULT_LED_PIN,0);
+  gpio_put(PICO_DEFAULT_LED_PIN,0);
   sleep_ms(t);
 
 }
@@ -2239,21 +2139,21 @@ void DumpFlashRom(unsigned int FromAddr, int dumpsize,FRESULT fr){
 
 
 int GetSwitches(){
-//  gpio_init(HASSwitchesIO); 
-//  gpio_set_dir(HASSwitchesIO,GPIO_IN);
-//  gpio_pull_up(HASSwitchesIO);
-
 //serial port selection swithch
-//  gpio_init(SERSEL);
-//  gpio_set_dir(SERSEL,GPIO_IN);
-//  gpio_pull_up(SERSEL);
+    gpio_init(SERSEL);
+    gpio_set_dir(SERSEL,GPIO_IN);
+    gpio_pull_up(SERSEL);
 
-  sleep_ms(1); //wait for io to settle.
+    sleep_ms(1); //wait for io to settle.
 
-  int v=0;
+    int v=0;
+    if (gpio_get(SERSEL)==1){
+        UseUsb=1;
+    }else{
+        UseUsb=0;
+    }
 
-//default to USB before INI parse
-    UseUsb=1; 
+//and buttons and an LED too.
 
 //setup DUMP gpio
     gpio_init(DUMPBUT);
@@ -2316,11 +2216,7 @@ void PlayDiskSounds(void){
    uint8_t c=floppy_disc_short[disksound_pointer];
    disksound_pointer++;
    if(disksound_pointer>FLOPPYDISKSOUNDLEN)disksound_pointer=0;
-   if (disksounds){
-       pwm_set_both_levels(PWMslice,c,c);
-   }else{
-       pwm_set_both_levels(PWMslice,0,0);
-   }
+   pwm_set_both_levels(PWMslice,c,c);
    sleep_us(110); //8khz ish
    disksound_timer++;
    if(disksound_timer>4000){
@@ -2338,16 +2234,7 @@ void PlayAllophones(uint8_t *alist,int listlength){
 }
 
 
-void SetPWMCLK(uint32_t Cfreq){
-    float x=(float)250000/4/(float)Cfreq;
-    pwm_set_clkdiv(CLKslice,x);
-    pwm_set_wrap(CLKslice,3);
-    pwm_set_chan_level(CLKslice,PWM_CHAN_B,2);
-    
-}
-
 void SetPWM(void){
-    //Sound Pins
     gpio_init(soundIO1);
     gpio_set_dir(soundIO1,GPIO_OUT);
     gpio_set_function(soundIO1, GPIO_FUNC_PWM);
@@ -2364,16 +2251,7 @@ void SetPWM(void){
 
     pwm_set_wrap (PWMslice, 256);
     pwm_set_enabled(PWMslice,true);
-    
-    //set Clk PWM
-    gpio_init(ClkPin);
-    gpio_set_dir(ClkPin,GPIO_OUT);
-    gpio_set_function(ClkPin, GPIO_FUNC_PWM);
 
-    CLKslice=pwm_gpio_to_slice_num(ClkPin);
-    SetPWMCLK(ClkFreq);
-    pwm_set_enabled(CLKslice,true);
-    
 }
 
 void Beep(uint8_t note){
@@ -2392,7 +2270,7 @@ void Beep(uint8_t note){
 }
 
 //############################################################################################################
-//######################## NEO PIXEL DRIVER ##################################################################
+//######################## NEO PIXEL DRIVER ######################################
 //############################################################################################################
 
 //neo vars
@@ -2561,7 +2439,7 @@ void DoNeo(uint8_t addr,uint8_t data){
        if (neorepeat>0){
            for (int p=neorepeat;p<neomax;p++){
                pixels[p][0]=pixels[p-neorepeat][0];
-                pixels[p][1]=pixels[p-neorepeat][1];
+               pixels[p][1]=pixels[p-neorepeat][1];
                pixels[p][2]=pixels[p-neorepeat][2];
            }
        }    
@@ -2584,6 +2462,44 @@ void DoNeo(uint8_t addr,uint8_t data){
   }
 }
 
+
+void test_say(char * Sentance){
+    uint16_t x=0;
+    char c;
+    while((c=Sentance[x])!=0){
+        printf("%c",c);
+        x++;
+    }
+    printf("\n");
+    
+}
+
+void AddToSentance(char c){
+    if(c=='\n'){
+//        test_say(Sentance);
+//	printf("\nSay '%s'\n",Sentance);
+        uint16_t s=slen(Sentance);
+        Sentance[s++]=' ';
+        Sentance[s++]=' ';
+        Sentance[s++]=' ';
+        Sentance[s]=0;
+        sayWBW(Sentance);
+//        PrintOutput();
+//        printf(" - after say , starting speak\n");
+        SentPos=0;
+	Sentance[0]=' ';
+	Sentance[1]=0;        
+	speakPos=0;        
+        speak=1;
+        
+    }else{
+        Sentance[SentPos]=c;
+        SentPos++;
+        Sentance[SentPos]=0;
+    
+    }
+
+}
 
 
 //############################################################################################################
@@ -2611,26 +2527,61 @@ void Core1Main(void){
     sleep_ms(500);
 
     while(1){
+      //Send raw Allophone data
       if(SPO256DataReady>0){
           PlayAllophone(SPO256DataOut);
           SPO256DataReady=0;
       }
+      
+      //Send beep frequencies
       if(BeepDataReady>0){
           Beep(BeepDataOut);
           BeepDataReady=0;
-      }    
+      }
+          
+      //Send data for Neo Pixels
       if(NeoPortDataReady>0){
           DoNeo(NeoPortAddr,NeoPortData);
           NeoPortDataReady=0;
       }
-      //playdisk sounds triggered from sd card LED 
+
+      //Playdisk sounds triggered from sd card LED 
       if(playing_disk){
         PlayDiskSounds();
       }
+      
+      //Data to Sentance to be encoded to allophones
+      if(CTS256DataReady>0){
+          // add to sentance buffer
+          AddToSentance(CTS256DataOut);
+          CTS256DataReady=0;
+      }
+      
+      //If speak is triggered after a sentance encoded to allophones
+      if(speak>0){
+         if(output[speakPos]==0){
+            speak=0;
+            speakPos=0;
+            output[0]=0;
+//            printf("\nSpeak Ended\n");
+         }else{   
+            char c =output[speakPos];
+            if (c==64){c=0;}
+            PlayAllophone(c);
+
+//            printf("%02X ",c);
+
+            speakPos++;
+         }   
+      }
+      
+#ifdef WithDisplay
       if(DisplayDirty){
         DisplayDirty=2;
         DisplayDDBuffer();
-      }  
+      }
+#endif
+
       tight_loop_contents();
   }
 }
@@ -2643,57 +2594,7 @@ void Core1Main(void){
 
 
 
-void DoBanner(void){
-      char RomTitle[200];
 
-    //compiled time
-	printf("\n\rCompiled %s %s\n",__DATE__,__TIME__);
-
-    //chip detect
-     char chip[8]="??????";
-#ifdef PICO_RP2350
-       sprintf(chip,"RP2350");
-#endif
-#ifdef PICO_RP2040
-     sprintf(chip,"RP2040");
-#endif
-
-
-
-  
-    //banner
-    sprintf(RomTitle, "\n\r\n\r\n\r\n\r\n\r\n\r");PrintToSelected(RomTitle,0);                                        
-    sprintf(RomTitle, "\n\r        _       _   _____   _       _    ");PrintToSelected(RomTitle,0);                       
-    sprintf(RomTitle, "\n\r       | |     | | (___  \\ | |     | |   ");PrintToSelected(RomTitle,0);                         
-    sprintf(RomTitle, "\n\r       | |  _  | |  ___| | | |  _  | |   ");PrintToSelected(RomTitle,0);                       
-    sprintf(RomTitle, "\n\r       | | | | | | (___ (  | | | | | |   ");PrintToSelected(RomTitle,0);                        
-    sprintf(RomTitle, "\n\r       | | | | | |  ___| | | | | | | |   ");PrintToSelected(RomTitle,0);                       
-    sprintf(RomTitle, "\n\r       |_| |_| |_| (_____/ |_| |_| |_|   ");PrintToSelected(RomTitle,0);                            
-    //sprintf(RomTitle, "\n\r    ");PrintToSelected(RomTitle,0);
-    sprintf(RomTitle, "\n\r            _____    _   _    ___              ");PrintToSelected(RomTitle,0);                       
-    sprintf(RomTitle, "\n\r           |  __ \\  | | | |  / __|             ");PrintToSelected(RomTitle,0);                         
-    sprintf(RomTitle, "\n\r           | |__| | | | | |  | |              ");PrintToSelected(RomTitle,0);                       
-    sprintf(RomTitle, "\n\r           |  __ (  | | | |  \\  \\             ");PrintToSelected(RomTitle,0);                        
-    sprintf(RomTitle, "\n\r           | |__| | | |_| |  _| |                ");PrintToSelected(RomTitle,0);                       
-    sprintf(RomTitle, "\n\r           |_____/  \\_____/ |___/               ");PrintToSelected(RomTitle,0);                            
-    //sprintf(RomTitle, "\n\r    ");PrintToSelected(RomTitle,0);
-    sprintf(RomTitle, "\n\r   ____________________________________________ ");PrintToSelected(RomTitle,0);
-    sprintf(RomTitle, "\n\r  / __    __      __    __                     |");PrintToSelected(RomTitle,0);
-    sprintf(RomTitle, "\n\r  | |__|  |__|    |__|  |__|                   |");PrintToSelected(RomTitle,0);
-    sprintf(RomTitle, "\n\r  |                           _______________  |");PrintToSelected(RomTitle,0);
-    sprintf(RomTitle, "\n\r  | RP2350 RomWBW Bus  by    | ROMWBW Bus on | |");PrintToSelected(RomTitle,0);
-    sprintf(RomTitle, "\n\r  |     Derek Woodroffe      |     %s    | |",chip);PrintToSelected(RomTitle,0);
-    sprintf(RomTitle, "\n\r  |     of Extreme Kits      |_______________| |");PrintToSelected(RomTitle,0);
-    sprintf(RomTitle, "\n\r  |     Kits at extkits.uk/romwbwbus           |");PrintToSelected(RomTitle,0);
-    sprintf(RomTitle, "\n\r  |  _______      2025                         |");PrintToSelected(RomTitle,0);
-    sprintf(RomTitle, "\n\r  | |_______|        ExtKits       ROMWBW      |");PrintToSelected(RomTitle,0);
-    sprintf(RomTitle, "\n\r _|____________________________________________|_");PrintToSelected(RomTitle,0);
-    sprintf(RomTitle, "\n\r|________________________________________________| \n\r\n\r");PrintToSelected(RomTitle,0);
-    sprintf(RomTitle, "\n\r    ");PrintToSelected(RomTitle,0);                                                                              
-
-
-
-}
 
 
 
@@ -2748,45 +2649,47 @@ void main(void)
         stdio_usb_init();
         flash_led(250);
         printf("\n %c[2J\n\n\rUSB INIT OK \n\r",27);
+           
+#ifdef WithDisplay
+// init display
+        init_I2C();
+        printf(" Done\n ");
+        init_display();
+        printf("\nDone\n");
+#endif           
+           
                 
 //init uart
         init_pico_uart();
         sprintf(RomTitle,"\n %c[2J \n\n\rUART INIT OK \n\r",27);
         uart_puts(UART_ID,RomTitle);
 
-// init display
-	init_I2C();
-        init_display();
 
 // mount SD Card
         
         FATFS fs;
         FRESULT fr = f_mount(&fs, "", 1);
         
-        // No SD Disk
         if (FR_OK != fr){
-            
-            
             // panic("f_mount error: %s (%d)\n", FRESULT_str(fr), fr);
             sleep_ms(3000); // wait for USB
-
-            DoBanner();
-
             gpio_put(DISKLED, 1); // SET LED PIN ON as a subtle hint.
             printf("SD INIT FAIL  \n\r");
             uart_puts(UART_ID, "SD INIT FAIL\n\r");
-
-	    SSD1306_background_image(NoDisk);
-	    SSD1306_sendBuffer();
-	    DisplayDirty=0;
-	    
-	    
-
+#ifdef WithDisplay            
+            SSD1306_background_image(NoDisk);
+            SSD1306_sendBuffer();
+            DisplayDirty=0;
+#endif 
             sleep_ms(1000);
-            while(1); //halt
+            while(1){
+               flash_led(250);
+            }; //halt
         }
 	printf("SD INIT OK  \n\r");
         uart_puts(UART_ID, "SD INIT OK \n\r");
+        
+        
 
 // inifile parse
 	dictionary * ini ;
@@ -2842,31 +2745,19 @@ void main(void)
           // Trace enable from inifile
 	  trace = iniparser_getint(ini, "DEBUG:trace",0 );
 	  watch = iniparser_getint(ini, "DEBUG:watch",0 );
-	  
-	  //Uart Settings
-	  Uart_BaudRate = iniparser_getint(ini, "UART:BaudRate",Uart_BaudRate );
-	  Uart_DataBits = iniparser_getint(ini, "UART:DataBits",Uart_DataBits );
-	  Uart_StopBits = iniparser_getint(ini, "UART:StopBits",Uart_StopBits );
-	  Uart_Parity = iniparser_getint(ini, "UART:UartParity",Uart_Parity );
 
 	  // PORT
-	  PIOAport = iniparser_getint(ini, "PORT:pioa",0 );
+	  PIOA = iniparser_getint(ini, "PORT:pioa",0 );
+
 	  SPO256Port = iniparser_getint(ini, "PORT:spo256",SPO256Port );
 	  SPO256FreqPort = iniparser_getint(ini, "PORT:spo256freq",SPO256FreqPort );
+	  CTS256Port = iniparser_getint(ini, "PORT:cts256",CTS256Port );
 	  BeepPort = iniparser_getint(ini, "PORT:beep",BeepPort );
 	  NeoPixelPort = iniparser_getint(ini,"PORT:Neo", NeoPixelPort);
-	  DisplayRegPort = iniparser_getint(ini,"PORT:DisplayReg",DisplayRegPort);
-	  DisplayDataPort= iniparser_getint(ini,"PORT:DisplayData",DisplayDataPort);
-	  
-	  InvertSwitches = iniparser_getint(ini, "PORT:InvSwitches",InvertSwitches);
-          
-	  //Bus
-	  wait = iniparser_getint(ini, "BUS:wait",wait );
-	  IoSleep = iniparser_getint(ini,"BUS:IoSleep",IoSleep);
-	  ClkFreq = iniparser_getint(ini,"BUS:ClkFreq",ClkFreq);
-
-	  //Sound
-	  disksounds=iniparser_getint(ini, "[SOUND]:disksounds",disksounds );
+#ifdef WithDisplay
+          DisplayRegPort = iniparser_getint(ini,"PORT:DisplayReg",DisplayRegPort);
+          DisplayDataPort= iniparser_getint(ini,"PORT:DisplayData",DisplayDataPort);
+#endif
 
           // Overclock
 	  overclock = iniparser_getint(ini, "SPEED:overclock",0 );
@@ -2882,25 +2773,14 @@ void main(void)
 
 //########################################### End of INI Parser ###########################
 
-// Set Uart paramters
-         setUartParams(Uart_BaudRate,Uart_DataBits,Uart_StopBits,Uart_Parity);
-
 
 //IF switches link present, get switches and select UART from switches
-//	  if (overridejumpers==0){
-	     GetSwitches();
-//	  }else{
-//	     printf("Override jumpers set in INI \n\r");
-//	  }
+        GetSwitches();	
 	
         }else{
             uart_puts(UART_ID,"No  \n\r");
             printf("SD INIT OK \n\r",1);
         }
-        
-        //set clock Pin
-        SetPWMCLK(ClkFreq);
-        
         
 
         flash_led(200);
@@ -2919,44 +2799,70 @@ void main(void)
            printf("##ABORT##  Serial default NOT selected\n");
            while(1);
         }else{
-            if(UseUsb==1){
-                printf("Default Serial USB\n");
-            }else{
-                printf("Default Serial UART\n");
-            }
-        }
+            if(UseUsb==1){   
+    	        printf("Default Serial USB\n"); 
+    	    }else{
+	        printf("Default Serial UART\n");
+	    }
+       }
+
+//compiled time
+	printf("\n\rCompiled %s %s\n",__DATE__,__TIME__);
+
 
 // Decided on serial port so from here on Print only to that post
 
-
-
 //init PIO
-        if(PIOAport<256) PIOA_init();
+        if(PIOA<256) PIOA_init();
+
+//chip detect
+     char chip[8]="??????";
+#ifdef PICO_RP2350
+     sprintf(chip,"RP2350");
+#endif
+#ifdef PICO_RP2040
+     sprintf(chip,"RP2040");
+#endif
 
 
-
-
-
-//init external RC2014 bus
-printf("Init External RC2014 bus\n");
-z80_bus_init();
-
-
-    DoBanner();
+//banner
+sprintf(RomTitle, "\n\r\n\r");PrintToSelected(RomTitle,0);                                        
+sprintf(RomTitle, "\n\r     _____    _     ____     ____   ");PrintToSelected(RomTitle,0);                       
+sprintf(RomTitle, "\n\r    |  __ \\  | |   / __ \\   / __ \\  ");PrintToSelected(RomTitle,0);                         
+sprintf(RomTitle, "\n\r    | |__| | | |  | |  |_| | |  | | ");PrintToSelected(RomTitle,0);                       
+sprintf(RomTitle, "\n\r    |  ___/  | |  | |   _  | |  | | ");PrintToSelected(RomTitle,0);                        
+sprintf(RomTitle, "\n\r    | |      | |  | |__| | | |__| | ");PrintToSelected(RomTitle,0);                       
+sprintf(RomTitle, "\n\r    |_|      |_|   \\____/   \\____/  ");PrintToSelected(RomTitle,0);    
+sprintf(RomTitle, "\n\r     _       _   _____   _       _    ");PrintToSelected(RomTitle,0);                       
+sprintf(RomTitle, "\n\r    | |     | | (___  \\ | |     | |   ");PrintToSelected(RomTitle,0);                         
+sprintf(RomTitle, "\n\r    | |  _  | |  ___| | | |  _  | |   ");PrintToSelected(RomTitle,0);                       
+sprintf(RomTitle, "\n\r    | | | | | | (___ (  | | | | | |   ");PrintToSelected(RomTitle,0);                        
+sprintf(RomTitle, "\n\r    | | | | | |  ___| | | | | | | |   ");PrintToSelected(RomTitle,0);                       
+sprintf(RomTitle, "\n\r    |_| |_| |_| (_____/ |_| |_| |_|   ");PrintToSelected(RomTitle,0);                            
+sprintf(RomTitle, "\n\r    ");PrintToSelected(RomTitle,0);
+sprintf(RomTitle, "\n\r   ___________________________________ ");PrintToSelected(RomTitle,0);
+#ifdef WithDisplay
+sprintf(RomTitle, "\n\r  |        _________________          |");PrintToSelected(RomTitle,0);
+sprintf(RomTitle, "\n\r  |       | RomWBW          |         |");PrintToSelected(RomTitle,0);
+sprintf(RomTitle, "\n\r  |       | Ready           |         |");PrintToSelected(RomTitle,0);
+sprintf(RomTitle, "\n\r  |       |_________________|         |");PrintToSelected(RomTitle,0);
+#endif
+sprintf(RomTitle, "\n\r  |  __    __    __      __           |");PrintToSelected(RomTitle,0);
+sprintf(RomTitle, "\n\r  | |__|  |__|  |__|    |__|          |");PrintToSelected(RomTitle,0);
+sprintf(RomTitle, "\n\r  |                                   |");PrintToSelected(RomTitle,0);
+sprintf(RomTitle, "\n\r  |        PICO ROMWBW on %s      |",chip);PrintToSelected(RomTitle,0);
+sprintf(RomTitle, "\n\r  |         Derek Woodroffe           |");PrintToSelected(RomTitle,0);
+sprintf(RomTitle, "\n\r  |           Extreme Kits            |");PrintToSelected(RomTitle,0);
+sprintf(RomTitle, "\n\r  |     Kits at extkits.uk/ROMWBW     |");PrintToSelected(RomTitle,0);
+sprintf(RomTitle, "\n\r  |  _______      2026                |");PrintToSelected(RomTitle,0);
+sprintf(RomTitle, "\n\r  | |_______|        eXtkits    WBW   |");PrintToSelected(RomTitle,0);
+sprintf(RomTitle, "\n\r _|___________________________________|_");PrintToSelected(RomTitle,0);
+sprintf(RomTitle, "\n\r|_______________________________________| \n\r\n\r");PrintToSelected(RomTitle,0);
+sprintf(RomTitle, "\n\r    ");PrintToSelected(RomTitle,0);                                                                              
 
 // memory free
 	printf("Total Heap %i\n",getTotalHeap());
 	printf("Free Heap %i\n",getFreeHeap());
-
-// text test
-/*        SSD1306_clear();
-        char t[32];
-        sprintf(t,"123456789012456");
-        drawText( t, 0,1);
-        drawText( t, 0,9);
-        drawText( t, 0,17);
-        drawText( t, 0,25);
-*/
 
 
 //init Emulation
@@ -2986,15 +2892,8 @@ z80_bus_init();
             PrintToSelected("\rSIO selected\n\r",1);
         }
         
-        if(ide==1){
-          sprintf(RomTitle,"\nCPM/IDE 0 File:'%s' '%s' \n\r",idepath,idepathi);
-//          PrintToSelected(RomTitle,1);
-        }else{
-          sprintf(RomTitle,"Internal IDE disabled\n");
-          
-        }  
+        sprintf(RomTitle,"\nCPM/IDE 0 File:'%s' '%s' \n\r",idepath,idepathi);
         PrintToSelected(RomTitle,1);
-
 
         if(strlen(idepath1)>3){
             sprintf(RomTitle,"CPM/IDE 1 File:'%s' '%s' \n\r",idepath1,idepathi);
@@ -3113,8 +3012,6 @@ z80_bus_init();
 	cpu_z80.trace = z80_trace;
 
 
-	printf("Invert switches %i\n",InvertSwitches);	
-
 	PrintToSelected("\r\n #######  Pico RomWBW STARTING  ######\n\r",0);
 
 //Start Core1
@@ -3134,31 +3031,32 @@ z80_bus_init();
 		int i;
 		/* 36400 T states for base RC2014 - varies for others */
 
-		for (i = 0; i < 40; i++) {  //origional
+		// was i40 j50
+		for (i = 0; i < 40; i++) {  
 		    int j;
-		    for (j = 0; j < 200; j++) { Z80ExecuteTStates(&cpu_z80, (tstate_steps + 5)/ 10);	}
+		    //IoTimeShare 200 better for speed. 50 better for IO
+		    for (j = 0; j < IoTimeShare; j++) { Z80ExecuteTStates(&cpu_z80, (tstate_steps + 5)/ 10);	}
+
 		    if (acia) acia_timer(acia);
 		    if (sio2) sio2_timer();
 		    if (have_16x50) uart_event(&uart[0]);
 		}
 		
 		//fake USB char in interrupts
-		//if (UseUsb==1) 
 		intUSBcharwaiting();
 		
 		if (int_recalc) {
 			/* If there is no pending Z80 vector IRQ but we think
 			   there now might be one we use the same logic as for
 			   reti */
-			if (!live_irq )
-				poll_irq_event();
+			if (!live_irq )	poll_irq_event();
 			/* Clear this after because reti_event may set the
 			   flags to indicate there is more happening. We will
 			   pick up the next state changes on the reti if so */
-			if (!(cpu_z80.IFF1|cpu_z80.IFF2))
-   			   int_recalc = 0;
+			if (!(cpu_z80.IFF1|cpu_z80.IFF2)) int_recalc = 0;
 		}
-
+		
+		
 	            if(gpio_get(DUMPBUT)==0){
                         DumpMemory(0,0x10000,fr);
                         while(gpio_get(DUMPBUT)==0);
@@ -3186,6 +3084,8 @@ z80_bus_init();
                     
                     }
 
+		
+		
 	}
 }
 
