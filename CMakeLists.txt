@@ -8,10 +8,6 @@
 #  set(PICO_PLATFORM rp2350)
 #  set(PICO_PLATFORM rp2040)
 
-# the board definition file xk_rp2350b_core.h 
-# needs to be copied into pico-sdk/src/boards/include/boards 
-set(PICO_BOARD xk_rp2350b_core CACHE STRING "Board type")
-
 string(APPEND CMAKE_EXE_LINKER_FLAGS "-Wl,--print-memory-usage")
 
   cmake_minimum_required(VERSION 3.13)
@@ -68,11 +64,11 @@ string(APPEND CMAKE_EXE_LINKER_FLAGS "-Wl,--print-memory-usage")
     hardware_spi
     pico_fatfs	
     libz80
-    display
+    display	
   )
 
   pico_enable_stdio_usb(RomWBW 1)
-  pico_enable_stdio_uart(RomWBW 1)
+#  pico_enable_stdio_uart(RomWBW 1)
 
   pico_add_extra_outputs(RomWBW)
 
